@@ -1,58 +1,60 @@
 import argparse
-import json
+import os
 import gitlab
+from tabulate import tabulate
 
-def parse_tfplan(tfplan_path):
-    with open(tfplan_path, 'r') as tfplan_file:
-        tfplan = json.load(tfplan_file)
+def parse_args():
+    parser = argparse.ArgumentParser(description='Terraform plan summary')
+    parser.add_argument('--path', required=True, help='Path to Terraform plan JSON file')
+    return parser.parse_args()
 
-    resources = {}
-    for module in tfplan['resource_changes']:
-        for change in module['change']:
-            if change['actions'][0] == 'create':
-                res_type = change['type']
-                res_name = change['name']
-                if res_type not in resources:
-                    resources[res_type] = {}
-                resources[res_type][res_name] = change['before'] or change['after']
+def get_gitlab_client():
+    gitlab_private_token = os.environ.get('gitlab_private_token')
+    gl = gitlab.Gitlab('https://gitlab.com', private_token=gitlab_private_token, api_version='4')
+    return gl
 
-    return resources
+def get_merge_request_iid():
+    return os.environ.get('CI_MERGE_REQUEST_IID')
 
-
-def summarize_resources(resources):
+def get_resource_counts_and_names(terraform_plan):
     resource_counts = {}
-    for resource_type in resources:
-        resource_counts[resource_type] = len(resources[resource_type])
+    resource_names = {}
+    for resource in terraform_plan['resource_changes']:
+        resource_type = resource['type']
+        change_type = resource['change']['actions'][0]
+        if resource_type not in resource_counts:
+            resource_counts[resource_type] = {'create': [], 'update': [], 'delete': []}
+            resource_names[resource_type] = {'create': [], 'update': [], 'delete': []}
+        resource_counts[resource_type][change_type].append(1)
+        resource_names[resource_type][change_type].append(resource['name'])
+    return resource_counts, resource_names
 
-    return resource_counts
-
-
-def format_summary(summary):
-    max_type_length = max(len(resource_type) for resource_type in summary)
-    max_count_length = max(len(str(count)) for count in summary.values())
-    formatted_summary = 'Resource Type' + ' ' * (max_type_length - len('Resource Type')) + ' | ' + 'Resource Count' + ' ' * (max_count_length - len('Resource Count')) + '\n'
-    formatted_summary += '-' * (max_type_length + max_count_length + 3) + '\n'
-    for resource_type, resource_count in summary.items():
-        formatted_summary += resource_type + ' ' * (max_type_length - len(resource_type)) + ' | ' + str(resource_count) + ' ' * (max_count_length - len(str(resource_count))) + '\n'
-
-    return formatted_summary
-
-
-def post_mr_comment(project_id, merge_request_iid, summary):
-    gl = gitlab.Gitlab.from_config()
-    project = gl.projects.get(project_id)
-    merge_request = project.mergerequests.get(merge_request_iid)
-    merge_request.notes.create({'body': '### Terraform Plan Resource Summary\n\n' + summary})
-
+def format_resource_summary(resource_counts, resource_names):
+    sections = []
+    for change_type in ['create', 'update', 'delete']:
+        section = []
+        for resource_type, counts in resource_counts.items():
+            if sum(counts[change_type]) == 0:
+                continue
+            names = "\n".join(resource_names[resource_type][change_type])
+            section.append([resource_type, sum(counts[change_type]), names])
+        if len(section) > 0:
+            sections.append((change_type.capitalize(), section))
+    result = ""
+    for section in sections:
+        section_name, data = section
+        headers = ["Resource Type", "Count", "Names"]
+        result += f"{section_name}:\n{tabulate(data, headers, tablefmt='pipe')}\n\n"
+    return result.strip()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Summarize Terraform plan output and post as a comment to a GitLab merge request.')
-    parser.add_argument('--path', type=str, required=True, help='Path to Terraform plan JSON file')
-    parser.add_argument('--project-id', type=int, required=True, help='ID of GitLab project')
-    parser.add_argument('--merge-request-iid', type=int, required=True, help='IID of GitLab merge request')
-    args = parser.parse_args()
-
-    resources = parse_tfplan(args.path)
-    resource_summary = summarize_resources(resources)
-    formatted_summary = format_summary(resource_summary)
-    post_mr_comment(args.project_id, args.merge_request_iid, formatted_summary)
+    args = parse_args()
+    with open(args.path, 'r') as f:
+        terraform_plan = json.load(f)
+    resource_counts, resource_names = get_resource_counts_and_names(terraform_plan)
+    resource_summary = format_resource_summary(resource_counts, resource_names)
+    gl = get_gitlab_client()
+    merge_request_iid = get_merge_request_iid()
+    project_id = os.environ.get('CI_PROJECT_ID')
+    merge_request = gl.projects.get(project_id).mergerequests.get(merge_request_iid)
+    merge_request.notes.create({'body': f'Terraform plan summary:\n{resource_summary}'})
