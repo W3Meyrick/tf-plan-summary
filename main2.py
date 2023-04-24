@@ -1,54 +1,44 @@
+import argparse
 import json
 import os
 import gitlab
-import argparse
 
-def read_plan_output(plan_output_path):
-    with open(plan_output_path) as f:
-        plan_output = json.load(f)
-    return plan_output
+def summarize_terraform_plan(plan_path):
+    with open(plan_path) as f:
+        plan = json.load(f)
 
-def group_resources_by_type(plan_output):
-    resources_by_type = {}
-    for resource in plan_output["resource_changes"]:
-        resource_type = resource["type"]
-        if resource_type not in resources_by_type:
-            resources_by_type[resource_type] = {"count": 0, "resources": []}
-        resources_by_type[resource_type]["count"] += 1
-        resources_by_type[resource_type]["resources"].append(resource)
-    return resources_by_type
-
-def construct_summary_table(resources_by_type):
-    max_type_length = max(len(t) for t in resources_by_type.keys())
-    max_name_length = max(
-        len(r["name"]) for r in resource for resource in resources_by_type.values()
-    )
+    resource_counts = {}
+    for resource in plan['resource_changes']:
+        resource_type = resource['type']
+        resource_name = resource['name']
+        resource_counts[(resource_type, resource_name)] = resource_counts.get((resource_type, resource_name), 0) + 1
 
     table = []
-    for resource_type, resources in resources_by_type.items():
-        table.append(
-            f"| {resource_type:<{max_type_length}} | {resources['count']:<10} |"
-        )
-        for resource in resources["resources"]:
-            table.append(
-                f"| {'':{max_type_length}} | {resource['name']:<{max_name_length}} |"
-            )
+    table.append(('Resource Type', 'Resource Name', 'Count'))
+    table.append(('-------------', '-------------', '-----'))
+    for (resource_type, resource_name), count in sorted(resource_counts.items()):
+        table.append((resource_type, resource_name, count))
 
-    return "\n".join(table)
+    col_widths = [max(len(str(row[i])) for row in table) for i in range(len(table[0]))]
+    format_str = '  '.join(['{{:<{}}}'.format(width) for width in col_widths])
+    table_str = '\n'.join([format_str.format(*row) for row in table])
 
-def post_summary_table_to_merge_request(summary_table):
-    gl = gitlab.Gitlab(os.environ["CI_API_V4_URL"], private_token=os.environ["CI_JOB_TOKEN"])
-    project_id = os.environ["CI_PROJECT_ID"]
-    merge_request_iid = os.environ["CI_MERGE_REQUEST_IID"]
-    merge_request = gl.projects.get(project_id).merge_requests.get(merge_request_iid)
-    merge_request.notes.create({"body": summary_table})
+    return table_str
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Generate and post Terraform plan summary table to a GitLab merge request.')
-    parser.add_argument('plan_output', type=str, help='Path to Terraform plan output JSON file')
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', help='Path to Terraform plan JSON file', required=True)
     args = parser.parse_args()
 
-    plan_output = read_plan_output(args.plan_output)
-    resources_by_type = group_resources_by_type(plan_output)
-    summary_table = construct_summary_table(resources_by_type)
-    post_summary_table_to_merge_request(summary_table)
+    project_id = os.environ.get('CI_PROJECT_ID')
+    merge_request_iid = os.environ.get('CI_MERGE_REQUEST_IID')
+
+    gl = gitlab.Gitlab.from_env()
+    project = gl.projects.get(project_id)
+    merge_request = project.mergerequests.get(merge_request_iid)
+
+    table_str = summarize_terraform_plan(args.path)
+    merge_request.notes.create({'body': table_str})
+
+if __name__ == '__main__':
+    main()
