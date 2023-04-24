@@ -1,6 +1,7 @@
 import json
 import os
 import gitlab
+import argparse
 
 def read_plan_output(plan_output_path):
     with open(plan_output_path) as f:
@@ -43,7 +44,11 @@ def post_summary_table_to_merge_request(summary_table):
     merge_request.notes.create({"body": summary_table})
 
 if __name__ == "__main__":
-    plan_output = read_plan_output("terraform-plan.json")
+    parser = argparse.ArgumentParser(description='Generate and post Terraform plan summary table to a GitLab merge request.')
+    parser.add_argument('plan_output', type=str, help='Path to Terraform plan output JSON file')
+    args = parser.parse_args()
+
+    plan_output = read_plan_output(args.plan_output)
     resources_by_type = group_resources_by_type(plan_output)
     summary_table = construct_summary_table(resources_by_type)
     post_summary_table_to_merge_request(summary_table)
