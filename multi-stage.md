@@ -73,3 +73,21 @@ for template_file in os.listdir(templates_dir):
 
 Step 5: Configure the first stage of your GitLab CI pipeline
 In your .gitlab-ci.yml file, configure the first stage of
+
+
+# job1.yml.j2
+
+{% if variables %}
+{{ job_name }}:
+  script:
+    - echo "Running {{ job_name }}"
+    - # Add your commands here
+  variables:
+    {% for key, value in variables.items() %}
+    {{ key }}: {{ value }}
+    {% endfor %}
+{% else %}
+{{ job_name }}:
+  script:
+    - echo "No variables defined for {{ job_name }}"
+{% endif %}
